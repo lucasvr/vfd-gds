@@ -76,8 +76,6 @@ typedef struct thread_data_t {
 
 static bool cu_file_driver_opened = false;
 
-/* static bool reg_once = false; */
-
 /* The driver identification number, initialized at runtime */
 static hid_t H5FD_GDS_g = H5I_INVALID_HID;
 
@@ -1189,19 +1187,6 @@ H5FD__gds_read(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr,
         H5FD_GDS_GOTO_ERROR(H5E_ARGS, H5E_OVERFLOW, FAIL, "addr overflow");
 
     if (is_device_pointer(buf)) {
-        /* CUfileError_t status; */
-
-        /* TODO: register device memory only once */
-        /*
-         * if (!reg_once) {
-         *   status = cuFileBufRegister(buf, size, 0);
-         *   if (status.err != CU_FILE_SUCCESS) {
-         *     H5FD_GDS_GOTO_ERROR(H5E_INTERNAL, H5E_SYSTEM, NULL, "cufile buffer register failed");
-         *   }
-         *   reg_once = true;
-         * }
-         */
-
         if (io_threads > 0) {
             assert(size != 0);
 
@@ -1244,14 +1229,6 @@ H5FD__gds_read(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr,
             ret = cuFileRead(file->cf_handle, buf, size, offset, 0);
             assert(ret > 0);
         }
-
-        /* TODO: deregister device memory only once */
-        /*
-         * status = cuFileBufDeregister(buf);
-         * if (status.err != CU_FILE_SUCCESS) {
-         *   H5FD_GDS_GOTO_ERROR(H5E_INTERNAL, H5E_SYSTEM, NULL, "cufile buffer deregister failed");
-         * }
-         */
     }
     else {
         /* If the system doesn't require data to be aligned, read the data in
@@ -1462,19 +1439,6 @@ H5FD__gds_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr,
         H5FD_GDS_GOTO_ERROR(H5E_ARGS, H5E_OVERFLOW, FAIL, "addr overflow");
 
     if (is_device_pointer(buf)) {
-        /* CUfileError_t status; */
-
-        /* TODO: register device memory only once */
-        /*
-         * if (!reg_once) {
-         *   status = cuFileBufRegister(buf, size, 0);
-         *   if (status.err != CU_FILE_SUCCESS) {
-         *     H5FD_GDS_GOTO_ERROR(H5E_INTERNAL, H5E_SYSTEM, NULL, "cufile buffer register failed");
-         *   }
-         *   reg_once = true;
-         * }
-         */
-
         if (io_threads > 0) {
             assert(size != 0);
 
@@ -1518,14 +1482,6 @@ H5FD__gds_write(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr,
             ret = cuFileWrite(file->cf_handle, buf, size, offset, 0);
             assert(ret > 0);
         }
-
-        /* TODO: deregister device memory only once */
-        /*
-         * status = cuFileBufDeregister(buf);
-         * if (status.err != CU_FILE_SUCCESS) {
-         *   H5FD_GDS_GOTO_ERROR(H5E_INTERNAL, H5E_SYSTEM, NULL, "cufile buffer deregister failed");
-         * }
-         */
     }
     else {
         /* If the system doesn't require data to be aligned, read the data in
@@ -1976,6 +1932,41 @@ H5FD__gds_ctl(H5FD_t *_file, uint64_t op_code, uint64_t flags, const void *input
 
             check_cudaruntimecall(cudaMemcpy(dst, src, copy_args->len, cpyKind))
 
+            break;
+        }
+
+        case H5FD_CTL__MEM_ALLOC:
+        {
+            CUfileError_t status;
+            const H5FD_ctl_alloc_args_t *alloc_args = (const H5FD_ctl_alloc_args_t *)input;
+            if (!alloc_args || !output)
+                H5FD_GDS_GOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "invalid arguments to mem_alloc ctl operation");
+
+            check_cudaruntimecall(cudaMalloc(output, alloc_args->size));
+
+            /* Register device memory */
+            status = cuFileBufRegister(*output, alloc_args->size, 0);
+            if (status.err != CU_FILE_SUCCESS) {
+                cudaFree(*output);
+                *output = NULL;
+                H5FD_GDS_GOTO_ERROR(H5E_INTERNAL, H5E_SYSTEM, FAIL, "cufile buffer register failed");
+            }
+            break;
+        }
+
+        case H5FD_CTL__MEM_FREE:
+        {
+            CUfileError_t status;
+            const H5FD_ctl_free_args_t *free_args = (const H5FD_ctl_free_args_t *)input;
+            if (!free_args)
+                H5FD_GDS_GOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "invalid arguments to mem_free ctl operation");
+
+            /* Deregister device memory */
+            status = cuFileBufDeregister(free_args->buf);
+            if (status.err != CU_FILE_SUCCESS)
+                H5FD_GDS_GOTO_ERROR(H5E_INTERNAL, H5E_SYSTEM, FAIL, "cufile buffer deregister failed");
+
+            check_cudaruntimecall(cudaFree(free_args->buf));
             break;
         }
 
