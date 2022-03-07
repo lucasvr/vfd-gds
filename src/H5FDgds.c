@@ -290,6 +290,8 @@ static haddr_t H5FD__gds_get_eof(const H5FD_t *_file, H5FD_mem_t type);
 static herr_t  H5FD__gds_get_handle(H5FD_t *_file, hid_t fapl, void **file_handle);
 static herr_t  H5FD__gds_read(H5FD_t *_file, H5FD_mem_t type, hid_t fapl_id, haddr_t addr, size_t size,
                               void *buf);
+static herr_t  H5FD__gds_readp(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr, size_t size,
+                              void *buf /*out*/, haddr_t buf_addr);
 static herr_t  H5FD__gds_write(H5FD_t *_file, H5FD_mem_t type, hid_t fapl_id, haddr_t addr, size_t size,
                                const void *buf);
 static herr_t  H5FD__gds_flush(H5FD_t *_file, hid_t dxpl_id, hbool_t closing);
@@ -1152,6 +1154,32 @@ static herr_t
 H5FD__gds_read(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr,
                size_t size, void *buf /*out*/)
 {
+    return H5FD__gds_readp(_file, type, dxpl_id, addr, size, buf, 0);
+}
+
+/*-------------------------------------------------------------------------
+ * Function:  H5FD__gds_readp
+ *
+ * Purpose:
+ *    Actual implementation of H5FD__gds_read(). This API takes an extra
+ *    argument `buf_addr' that refers to the offset from the output buffer
+ *    `buf' where the data will be written to.
+ *
+ * Return:  Success:  Zero. Result is stored in caller-supplied
+ *        buffer BUF.
+ *
+ *    Failure:  -1, Contents of buffer BUF are undefined.
+ *
+ * Programmer:  John J Ravi
+ *              Tuesday, 06 October 2020
+ *
+ *-------------------------------------------------------------------------
+ */
+static herr_t
+H5FD__gds_readp(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr,
+               size_t size, void *buf /*out*/, haddr_t buf_addr)
+
+{
     H5FD_gds_t *file = (H5FD_gds_t *)_file;
     ssize_t     nbytes;
     hbool_t     _must_align = TRUE;
@@ -1208,7 +1236,7 @@ H5FD__gds_read(H5FD_t *_file, H5FD_mem_t type, hid_t dxpl_id, haddr_t addr,
                 file->td[ii].cfr_handle = file->cf_handle;
 
                 file->td[ii].offset        = (off_t)(offset + ii * io_chunk);
-                file->td[ii].devPtr_offset = (off_t)ii * io_chunk;
+                file->td[ii].devPtr_offset = (off_t)ii * io_chunk + buf_addr;
                 file->td[ii].size          = (size_t)io_chunk;
                 file->td[ii].block_size    = block_size;
 
@@ -1967,6 +1995,18 @@ H5FD__gds_ctl(H5FD_t *_file, uint64_t op_code, uint64_t flags, const void *input
                 H5FD_GDS_GOTO_ERROR(H5E_INTERNAL, H5E_SYSTEM, FAIL, "cufile buffer deregister failed");
 
             check_cudaruntimecall(cudaFree(free_args->buf));
+            break;
+        }
+
+        case H5FD_CTL__READP:
+        {
+            const H5FD_ctl_readp_args_t *readp_args = (const H5FD_ctl_readp_args_t *)input;
+            if (!readp_args || !output)
+                H5FD_GDS_GOTO_ERROR(H5E_ARGS, H5E_BADVALUE, FAIL, "invalid arguments to readp ctl operation");
+
+            if (H5FD__gds_readp(_file, readp_args->type, readp_args->fapl_id, readp_args->addr,
+                                readp_args->size, *output, readp_args->output_buf_offset) < 0)
+                H5FD_GDS_GOTO_ERROR(H5E_VFL, H5E_READERROR, FAIL, "error reading to requested offset");
             break;
         }
 
